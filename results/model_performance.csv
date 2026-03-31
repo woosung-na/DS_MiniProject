@@ -1,1 +1,4 @@
-model_name,metrics_1,metrics_2
+model_name,train_cv_rmse,train_cv_r2,train_cv_mae,valid_rmse,valid_r2,valid_mae,test_rmse,test_r2,test_mae
+Ridge,89.28,0.5998,74.82,80.13,0.8522,62.91,157.6,0.4837,135.33
+Lasso,83.26,0.651,71.14,91.08,0.809,71.49,160.07,0.4674,139.16
+GradientBoosting,91.2,0.6075,73.31,70.22,0.8865,57.94,184.92,0.2892,173.87
