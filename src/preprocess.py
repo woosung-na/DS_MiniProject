@@ -62,8 +62,13 @@ def load_batch(path: str) -> list:
             print(f"  로드 완료 (MATLAB v7.3 / HDF5): {os.path.basename(path)}")
             # mat73은 batch를 dict-of-lists로 반환 → list-of-dicts로 변환
             return _dict_of_lists_to_list_of_dicts(data['batch'])
-        except Exception:
+        except Exception as e:
+            print(f"  [경고] mat73 로드 중 오류 발생: {e}")
             pass
+    else:
+        print("  [경고] mat73 패키지가 없어 scipy.io로 폴백(Fallback) 합니다.")
+        print("         (MATLAB v7.3 형식일 경우 에러가 발생할 수 있습니다. 'pip install mat73 h5py' 권장)")
+
 
     data = sio.loadmat(path, simplify_cells=True)
     print(f"  로드 완료 (MATLAB v7.2 이하): {os.path.basename(path)}")

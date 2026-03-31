@@ -26,7 +26,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from sklearn.linear_model import RidgeCV, LassoCV
+from sklearn.linear_model import RidgeCV, LassoCV, ElasticNetCV
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split, cross_validate
@@ -136,6 +136,7 @@ def build_models() -> dict:
     return {
         'Ridge': RidgeCV(alphas=alphas),
         'Lasso': LassoCV(alphas=alphas, cv=CV_FOLDS, max_iter=10_000, random_state=RANDOM_STATE),
+        'ElasticNet': ElasticNetCV(alphas=alphas, l1_ratio=[0.1, 0.5, 0.9], cv=CV_FOLDS, max_iter=10_000, random_state=RANDOM_STATE),
         'GradientBoosting': GradientBoostingRegressor(
             max_depth=3,
             learning_rate=0.05,
@@ -230,10 +231,10 @@ def main():
         if X_test_b3_s is not None and y_test_b3 is not None:
             test_b3_mape = compute_mape(y_test_b3, model.predict(X_test_b3_s))
 
-        # Lasso: 선택된 피처 출력
-        if name == 'Lasso' and hasattr(model, 'coef_'):
+        # Lasso, ElasticNet: 선택된 피처 출력
+        if name in ['Lasso', 'ElasticNet'] and hasattr(model, 'coef_'):
             nonzero = [f for f, c in zip(FEATURES, model.coef_) if abs(c) > 1e-6]
-            print(f"\n  [Lasso 선택 피처]: {nonzero} (총 {len(nonzero)}개)")
+            print(f"\n  [{name} 선택 피처]: {nonzero} (총 {len(nonzero)}개)")
 
         print_report(name, train_mape, valid_mape, test_b2_mape, test_b3_mape)
 

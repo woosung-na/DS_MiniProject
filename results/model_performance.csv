@@ -1,4 +1,5 @@
-model_name,train_cv_mape,valid_mape,test_mape,gap_train_valid,gap_valid_test,gap_target_test
-Ridge,9.17,6.65,26.47,2.51,-19.81,17.37
-Lasso,8.76,7.41,27.42,1.36,-20.01,18.32
-GradientBoosting,9.09,5.95,35.27,3.14,-29.32,26.17
+model_name,train_cv_mape,valid_mape,test_b2_mape,test_b3_mape,gap_train_valid,gap_valid_test_b2,gap_target_test_b2,gap_b2_b3,gap_target_test_b3
+Ridge,9.25,6.61,26.23,13.34,2.63,-19.61,17.13,12.88,4.24
+Lasso,8.76,7.43,27.18,13.8,1.32,-19.75,18.08,13.38,4.7
+ElasticNet,8.93,6.77,25.9,13.32,2.16,-19.13,16.8,12.58,4.22
+GradientBoosting,9.35,7.86,35.26,15.21,1.49,-27.4,26.16,20.05,6.11
