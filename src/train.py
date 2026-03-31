@@ -6,13 +6,19 @@
   - Valid  : Batch 1 Hold-out 검증 성능  (20%, cell 단위 분리)
   - Test   : Batch 2 최종 평가 성능      (모델 선택 완료 후 단 1회)
 
+  Valid를 CV가 아닌 Hold-out으로 설정한 이유:
+    배터리 데이터는 셀 단위로 독립적이며 각 셀이 서로 다른 충전 프로토콜로 실험된다.
+    CV 적용 시 동일 프로토콜 셀이 train/valid에 나뉘어 데이터 누수 위험이 잔존한다.
+    Hold-out은 셀 단위 분리를 명확히 보장하며 배치 간 일반화 평가에 더 적합하다.
+
 후보 모델:
   1. Ridge Regression  — Baseline (선형, 해석 용이)
   2. Lasso Regression  — 피처 희소화 (ΔQ 피처 간 중복 정보 제거)
   3. GradientBoosting  — 비선형 패턴 포착 (max_depth≤3, 과적합 방지)
 
-최종 모델 선택 기준:
-  Valid RMSE 최소 모델. Ridge와 GBM 차이 ≤ 5% 이면 Ridge 우선.
+평가 지표: MAPE (%)
+최종 모델 선택 기준: Valid MAPE 최소. Ridge와 GBM 차이 ≤ 5%p 이면 Ridge 우선.
+원논문 Target: Regression 9.1% MAPE (Severson et al., Nature Energy 2019)
 """
 
 import os
@@ -24,7 +30,7 @@ from sklearn.linear_model import RidgeCV, LassoCV
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split, cross_validate
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.metrics import mean_absolute_percentage_error
 
 # features.py가 같은 src/ 디렉터리에 있으므로 경로 추가
 sys.path.insert(0, os.path.dirname(__file__))
@@ -42,28 +48,58 @@ RANDOM_STATE   = 42
 # 평가 지표 계산
 # ---------------------------------------------------------------------------
 
-def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    r2   = float(r2_score(y_true, y_pred))
-    mae  = float(mean_absolute_error(y_true, y_pred))
-    return {'rmse': rmse, 'r2': r2, 'mae': mae}
+TARGET_MAPE = 9.1  # 원논문 (Severson et al., 2019) Regression MAPE
 
 
-def cv_metrics(model, X: np.ndarray, y: np.ndarray, cv: int = CV_FOLDS) -> dict:
+def compute_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """MAPE (%) 반환."""
+    return float(mean_absolute_percentage_error(y_true, y_pred) * 100)
+
+
+def cv_mape(model, X: np.ndarray, y: np.ndarray, cv: int = CV_FOLDS) -> float:
     """
-    cross_validate로 5-fold CV를 수행하고 RMSE·R²·MAE 평균을 반환한다.
+    5-fold CV를 수행하고 MAPE (%) 평균을 반환한다.
+    sklearn의 neg_mean_absolute_percentage_error는 소수 단위이므로 ×100 변환.
     """
-    scoring = {
-        'neg_rmse': 'neg_root_mean_squared_error',
-        'r2':       'r2',
-        'neg_mae':  'neg_mean_absolute_error',
-    }
-    scores = cross_validate(model, X, y, cv=cv, scoring=scoring, return_train_score=False)
-    return {
-        'rmse': float(-scores['test_neg_rmse'].mean()),
-        'r2':   float(scores['test_r2'].mean()),
-        'mae':  float(-scores['test_neg_mae'].mean()),
-    }
+    scores = cross_validate(
+        model, X, y, cv=cv,
+        scoring='neg_mean_absolute_percentage_error',
+        return_train_score=False,
+    )
+    return float(-scores['test_score'].mean() * 100)
+
+
+def print_report(name: str, train_mape: float, valid_mape: float, test_mape: float) -> None:
+    """모델별 MAPE 결과를 요구사항 테이블 형식으로 출력한다."""
+    gap_tv  = train_mape - valid_mape
+    gap_vt  = valid_mape - test_mape
+    gap_tgt = test_mape  - TARGET_MAPE
+
+    def note_gap(val: float, label_pos: str) -> str:
+        sign = '+' if val > 0 else ''
+        flag = f'  ← {label_pos}' if val > 0 else ''
+        return f"{sign}{val:.2f}%p{flag}"
+
+    rows = [
+        ("Train (Batch 1 CV)",      f"{train_mape:.2f}",  ""),
+        ("Valid (Batch 1 Hold-out)", f"{valid_mape:.2f}",  ""),
+        ("Test (Batch 2)",           f"{test_mape:.2f}",   ""),
+        ("Gap (Train-Valid)",        note_gap(gap_tv,  "과적합 의심"),           "(+) : 과적합 의심"),
+        ("Gap (Valid-Test)",         note_gap(gap_vt,  "배치간 일반화 저하 의심"), "(+) : 배치간 일반화 저하 의심"),
+        ("Gap (Target-Test)",        note_gap(gap_tgt, "원논문 대비 성능 저하"),  f"Target : 원논문 {TARGET_MAPE}%"),
+    ]
+
+    col_w = [26, 12, 30]
+    sep   = "+" + "+".join("-" * (w + 2) for w in col_w) + "+"
+    hdr   = f"| {'구분':<{col_w[0]}} | {'MAPE (%)':<{col_w[1]}} | {'비고':<{col_w[2]}} |"
+
+    print(f"\n  [{name}]")
+    print("  " + sep)
+    print("  " + hdr)
+    print("  " + sep)
+    for label, val, note in rows:
+        print(f"  | {label:<{col_w[0]}} | {val:<{col_w[1]}} | {note:<{col_w[2]}} |")
+    print("  " + sep)
 
 
 # ---------------------------------------------------------------------------
@@ -142,39 +178,31 @@ def main():
     results = []
 
     for name, model in models.items():
-        print(f"\n  [{name}]")
+        # Train: 5-fold CV MAPE
+        train_mape = cv_mape(model, X_train_s, y_train, cv=CV_FOLDS)
 
-        # 5-fold CV (train set 기준)
-        train_cv = cv_metrics(model, X_train_s, y_train, cv=CV_FOLDS)
-        print(f"    Train CV   RMSE={train_cv['rmse']:.1f}  R²={train_cv['r2']:.3f}  MAE={train_cv['mae']:.1f}")
-
-        # Hold-out valid
+        # Valid: Hold-out MAPE
         model.fit(X_train_s, y_train)
-        valid_pred = model.predict(X_valid_s)
-        valid_met  = compute_metrics(y_valid, valid_pred)
-        print(f"    Valid      RMSE={valid_met['rmse']:.1f}  R²={valid_met['r2']:.3f}  MAE={valid_met['mae']:.1f}")
+        valid_mape = compute_mape(y_valid, model.predict(X_valid_s))
 
-        # Test (Batch 2) — 단 1회 평가
-        test_pred = model.predict(X_test_s)
-        test_met  = compute_metrics(y_test, test_pred)
-        print(f"    Test(B2)   RMSE={test_met['rmse']:.1f}  R²={test_met['r2']:.3f}  MAE={test_met['mae']:.1f}")
+        # Test: Batch 2 MAPE (단 1회)
+        test_mape = compute_mape(y_test, model.predict(X_test_s))
 
         # Lasso: 선택된 피처 출력
         if name == 'Lasso' and hasattr(model, 'coef_'):
-            nonzero = [(f, c) for f, c in zip(FEATURES, model.coef_) if abs(c) > 1e-6]
-            print(f"    Lasso 선택 피처: {[f for f, _ in nonzero]} (총 {len(nonzero)}개)")
+            nonzero = [f for f, c in zip(FEATURES, model.coef_) if abs(c) > 1e-6]
+            print(f"\n  [Lasso 선택 피처]: {nonzero} (총 {len(nonzero)}개)")
+
+        print_report(name, train_mape, valid_mape, test_mape)
 
         results.append({
-            'model_name':    name,
-            'train_cv_rmse': round(train_cv['rmse'], 2),
-            'train_cv_r2':   round(train_cv['r2'],   4),
-            'train_cv_mae':  round(train_cv['mae'],   2),
-            'valid_rmse':    round(valid_met['rmse'],  2),
-            'valid_r2':      round(valid_met['r2'],    4),
-            'valid_mae':     round(valid_met['mae'],   2),
-            'test_rmse':     round(test_met['rmse'],   2),
-            'test_r2':       round(test_met['r2'],     4),
-            'test_mae':      round(test_met['mae'],    2),
+            'model_name':      name,
+            'train_cv_mape':   round(train_mape, 2),
+            'valid_mape':      round(valid_mape,  2),
+            'test_mape':       round(test_mape,   2),
+            'gap_train_valid': round(train_mape - valid_mape, 2),
+            'gap_valid_test':  round(valid_mape  - test_mape,  2),
+            'gap_target_test': round(test_mape   - TARGET_MAPE, 2),
         })
 
     # --- 결과 저장 ---
@@ -185,17 +213,17 @@ def main():
 
     # --- 최종 모델 선택 권고 ---
     print("\n" + "=" * 60)
-    print("최종 모델 선택 기준: Valid RMSE 최소")
-    best_idx  = df_results['valid_rmse'].idxmin()
-    best_name = df_results.loc[best_idx, 'model_name']
-    best_rmse = df_results.loc[best_idx, 'valid_rmse']
+    print("최종 모델 선택 기준: Valid MAPE 최소")
+    best_idx   = df_results['valid_mape'].idxmin()
+    best_name  = df_results.loc[best_idx, 'model_name']
+    best_mape  = df_results.loc[best_idx, 'valid_mape']
 
-    ridge_rmse = df_results.loc[df_results['model_name'] == 'Ridge', 'valid_rmse'].values[0]
-    gap_pct    = (best_rmse - ridge_rmse) / ridge_rmse * 100 if best_name != 'Ridge' else 0.0
+    ridge_mape = df_results.loc[df_results['model_name'] == 'Ridge', 'valid_mape'].values[0]
+    gap_pp     = best_mape - ridge_mape  # %p 차이 (음수 = best가 Ridge보다 낮음)
 
-    print(f"  Valid RMSE 최소 모델: {best_name} ({best_rmse:.1f})")
-    if best_name != 'Ridge' and abs(gap_pct) <= 5.0:
-        print(f"  → Ridge와 차이 {abs(gap_pct):.1f}% ≤ 5% : 해석 가능성 우선 → Ridge 권고")
+    print(f"  Valid MAPE 최소 모델: {best_name} ({best_mape:.2f}%)")
+    if best_name != 'Ridge' and abs(gap_pp) <= 5.0:
+        print(f"  → Ridge와 차이 {abs(gap_pp):.2f}%p ≤ 5%p : 해석 가능성 우선 → Ridge 권고")
     else:
         print(f"  → 최종 권고 모델: {best_name}")
 
