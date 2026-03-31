@@ -12,6 +12,8 @@ env/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+*scratch*.ipynb
+
 
 # Environment variables
 .env
