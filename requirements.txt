@@ -10,3 +10,4 @@ h5py==3.16.0
 kneed==0.8.6
 jupyter==1.1.1
 ipykernel==7.2.0
+optuna==4.8.0

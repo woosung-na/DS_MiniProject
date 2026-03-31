@@ -17,7 +17,7 @@ except ImportError:
 import scipy.io as sio
 
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'archive')
+DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data')
 
 BATCH1_PATH = os.path.join(DATA_DIR, '2017-05-12_batchdata_updated_struct_errorcorrect.mat')
 BATCH2_PATH = os.path.join(DATA_DIR, '2018-02-20_batchdata_updated_struct_errorcorrect.mat')

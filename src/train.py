@@ -28,7 +28,10 @@ import sys
 import numpy as np
 import pandas as pd
 
-from sklearn.linear_model import RidgeCV, LassoCV, ElasticNetCV
+import optuna
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+from sklearn.linear_model import RidgeCV, LassoCV, ElasticNetCV, Ridge, Lasso, ElasticNet
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split, cross_validate
@@ -133,7 +136,8 @@ def build_models() -> dict:
     후보 모델 딕셔너리를 반환한다.
     알파는 CV로 자동 선택, GBM은 과적합 방지를 위해 보수적 하이퍼파라미터 적용.
     """
-    alphas = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]
+    # alphas = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]
+    alphas = np.logspace(-3, 3, 50)
 
     return {
         'Ridge': RidgeCV(alphas=alphas),
@@ -145,6 +149,117 @@ def build_models() -> dict:
             n_estimators=100,
             subsample=0.8,
             random_state=RANDOM_STATE,
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Optuna 하이퍼파라미터 튜닝
+# ---------------------------------------------------------------------------
+
+def tune_with_optuna(
+    X_train_s: np.ndarray,
+    y_train: np.ndarray,
+    cv: int = CV_FOLDS,
+    n_trials: int = 100,
+) -> tuple[dict, dict]:
+    """
+    Ridge / Lasso / ElasticNet / GradientBoosting 하이퍼파라미터를 Optuna로 튜닝하고
+    (best_params, best_values) 를 반환한다.
+    best_values 를 Train MAPE 로 직접 사용해 선택 편향을 방지한다.
+    """
+
+    def objective_ridge(trial):
+        alpha = trial.suggest_float('alpha', 1e-4, 1e4, log=True)
+        scores = cross_validate(
+            Ridge(alpha=alpha), X_train_s, y_train, cv=cv,
+            scoring='neg_mean_absolute_percentage_error',
+        )
+        return float(-scores['test_score'].mean() * 100)
+
+    def objective_lasso(trial):
+        alpha = trial.suggest_float('alpha', 1e-4, 1e4, log=True)
+        scores = cross_validate(
+            Lasso(alpha=alpha, max_iter=10_000, random_state=RANDOM_STATE),
+            X_train_s, y_train, cv=cv,
+            scoring='neg_mean_absolute_percentage_error',
+        )
+        return float(-scores['test_score'].mean() * 100)
+
+    def objective_elasticnet(trial):
+        alpha    = trial.suggest_float('alpha',    1e-4, 1e4,  log=True)
+        l1_ratio = trial.suggest_float('l1_ratio', 0.01, 0.99)
+        scores = cross_validate(
+            ElasticNet(alpha=alpha, l1_ratio=l1_ratio,
+                       max_iter=10_000, random_state=RANDOM_STATE),
+            X_train_s, y_train, cv=cv,
+            scoring='neg_mean_absolute_percentage_error',
+        )
+        return float(-scores['test_score'].mean() * 100)
+
+    def objective_gbm(trial):
+        params = dict(
+            max_depth    =trial.suggest_int  ('max_depth',     2, 5),
+            learning_rate=trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            n_estimators =trial.suggest_int  ('n_estimators',  50, 300),
+            subsample    =trial.suggest_float('subsample',     0.5, 1.0),
+            random_state =RANDOM_STATE,
+        )
+        scores = cross_validate(
+            GradientBoostingRegressor(**params),
+            X_train_s, y_train, cv=cv,
+            scoring='neg_mean_absolute_percentage_error',
+        )
+        return float(-scores['test_score'].mean() * 100)
+
+    objectives = {
+        'Ridge'           : objective_ridge,
+        'Lasso'           : objective_lasso,
+        'ElasticNet'      : objective_elasticnet,
+        'GradientBoosting': objective_gbm,
+    }
+
+    best_params: dict = {}
+    best_values: dict = {}
+    for model_name, objective in objectives.items():
+        print(f"  [{model_name}] Optuna 튜닝 중... (n_trials={n_trials})")
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective, n_trials=n_trials)
+        best_params[model_name] = study.best_params
+        best_values[model_name] = study.best_value
+        print(f"  [{model_name}] 최적 파라미터: {study.best_params}  CV MAPE: {study.best_value:.2f}%")
+
+    return best_params, best_values
+
+
+def build_models_tuned(best_params: dict) -> dict:
+    """Optuna 튜닝 결과로 모든 모델을 생성한다."""
+    ridge_p = best_params.get('Ridge', {})
+    lasso_p = best_params.get('Lasso', {})
+    en_p    = best_params.get('ElasticNet', {})
+    gbm_p   = best_params.get('GradientBoosting', {})
+
+    return {
+        'Ridge': Ridge(
+            alpha=ridge_p.get('alpha', 1.0),
+        ),
+        'Lasso': Lasso(
+            alpha=lasso_p.get('alpha', 1.0),
+            max_iter=10_000,
+            random_state=RANDOM_STATE,
+        ),
+        'ElasticNet': ElasticNet(
+            alpha=en_p.get('alpha', 1.0),
+            l1_ratio=en_p.get('l1_ratio', 0.5),
+            max_iter=10_000,
+            random_state=RANDOM_STATE,
+        ),
+        'GradientBoosting': GradientBoostingRegressor(
+            max_depth    =gbm_p.get('max_depth',     3),
+            learning_rate=gbm_p.get('learning_rate', 0.05),
+            n_estimators =gbm_p.get('n_estimators',  100),
+            subsample    =gbm_p.get('subsample',     0.8),
+            random_state =RANDOM_STATE,
         ),
     }
 
@@ -223,14 +338,21 @@ def main():
     X_test_b2_s  = np.clip(scaler.transform(X_test_b2),  -CLIP_Z, CLIP_Z)
     X_test_b3_s  = np.clip(scaler.transform(X_test_b3), -CLIP_Z, CLIP_Z) if X_test_b3 is not None else None
 
+    # --- 4.5 Optuna 하이퍼파라미터 튜닝 (선형 모델만) ---
+    print("\n[Optuna] 하이퍼파라미터 튜닝 중 (Ridge / Lasso / ElasticNet / GBM)...")
+    best_params, best_values = tune_with_optuna(X_train_s, y_train, n_trials=100)
+
     # --- 5. 모델 학습 및 평가 ---
     print("\n[5/5] 모델 학습 및 평가 중...")
-    models  = build_models()
+    models  = build_models_tuned(best_params)
     results = []
 
     for name, model in models.items():
-        # Train: 5-fold CV MAPE
-        train_mape = cv_mape(model, X_train_s, y_train, cv=CV_FOLDS)
+        # Train: Optuna CV MAPE (선형) or 별도 CV (GBM)
+        if name in best_values:
+            train_mape = best_values[name]   # 선택 편향 없이 Optuna best_value 재사용
+        else:
+            train_mape = cv_mape(model, X_train_s, y_train, cv=CV_FOLDS)
 
         # Valid: Hold-out MAPE
         model.fit(X_train_s, y_train)
@@ -252,7 +374,7 @@ def main():
         print_report(name, train_mape, valid_mape, test_b2_mape, test_b3_mape)
 
         results.append({
-            'feature_version':    'v2',
+            'feature_version':    'v2_optuna',
             'model_name':         name,
             'train_cv_mape':      round(train_mape, 2),
             'valid_mape':         round(valid_mape,  2),
