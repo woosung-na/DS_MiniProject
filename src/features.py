@@ -115,7 +115,9 @@ def extract_summary_features(summary_df: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        컬럼: cell_id, cycle_life, mean_chargetime, mean_Tavg
+        컬럼: cell_id, cycle_life,
+              mean_chargetime, mean_Tavg, mean_Tmax,
+              mean_QD, std_QD, mean_IR
     """
     early = summary_df[summary_df['cycle'] <= EARLY_CYCLES]
 
@@ -126,6 +128,10 @@ def extract_summary_features(summary_df: pd.DataFrame) -> pd.DataFrame:
             cycle_life      =('cycle_life',  'first'),
             mean_chargetime =('chargetime',  'mean'),
             mean_Tavg       =('Tavg',        'mean'),
+            mean_Tmax       =('Tmax',        'mean'),
+            mean_QD         =('QD',          'mean'),
+            std_QD          =('QD',          'std'),
+            mean_IR         =('IR',          'mean'),
         )
         .reset_index()
     )
@@ -158,8 +164,25 @@ def build_feature_matrix(batch: list, batch_id: int = 1) -> pd.DataFrame:
 
     return df
 
+"""
+피처 엔지니어링 스크립트
 
-FEATURES = ['dQ_min', 'dQ_mean', 'dQ_var', 'mean_chargetime', 'mean_Tavg']
+EDA 결과를 바탕으로 최종 5개 피처를 추출한다.
+
+최종 피처셋:
+  - dQ_min      : ΔQ(V) = Q(V, cycle=100) - Q(V, cycle=10) 의 최솟값  (r=0.882)
+  - dQ_mean     : ΔQ(V) 의 평균값                                       (r=0.854)
+  - dQ_var      : ΔQ(V) 의 분산                                         (r=-0.838)
+  - mean_chargetime : 초기 100사이클 평균 충전시간                        (r=0.577)
+  - mean_Tavg   : 초기 100사이클 평균 온도                               (r=-0.482)
+
+제외 피처:
+  - mean_Tmax   : mean_Tavg와 Pearson r=0.96 (다중공선성)
+  - std_QD      : mean_QD와 Spearman r=0.93  (비선형 다중공선성)
+  - mean_IR     : cycle_life와 r=0.18         (낮은 상관)
+"""
+
+FEATURES = ['dQ_min', 'dQ_mean', 'dQ_var', 'mean_chargetime', 'mean_Tmax']
 TARGET   = 'cycle_life'
 
 

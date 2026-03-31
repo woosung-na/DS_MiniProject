@@ -21,6 +21,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'archive')
 
 BATCH1_PATH = os.path.join(DATA_DIR, '2017-05-12_batchdata_updated_struct_errorcorrect.mat')
 BATCH2_PATH = os.path.join(DATA_DIR, '2018-02-20_batchdata_updated_struct_errorcorrect.mat')
+BATCH3_PATH = os.path.join(DATA_DIR, '2018-04-12_batchdata_updated_struct_errorcorrect.mat')
 
 
 def _dict_of_lists_to_list_of_dicts(d) -> list:
