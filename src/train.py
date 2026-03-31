@@ -14,11 +14,13 @@
 후보 모델:
   1. Ridge Regression  — Baseline (선형, 해석 용이)
   2. Lasso Regression  — 피처 희소화 (ΔQ 피처 간 중복 정보 제거)
-  3. GradientBoosting  — 비선형 패턴 포착 (max_depth≤3, 과적합 방지)
+  3. ElasticNet        — Ridge + Lasso 결합
+  4. GradientBoosting  — 비선형 패턴 포착 (max_depth≤3, 과적합 방지)
 
 평가 지표: MAPE (%)
 최종 모델 선택 기준: Valid MAPE 최소. Ridge와 GBM 차이 ≤ 5%p 이면 Ridge 우선.
 원논문 Target: Regression 9.1% MAPE (Severson et al., Nature Energy 2019)
+
 """
 
 import os
@@ -36,7 +38,7 @@ from sklearn.metrics import mean_absolute_percentage_error
 sys.path.insert(0, os.path.dirname(__file__))
 import preprocess
 from preprocess import load_batch, BATCH1_PATH, BATCH2_PATH
-from features import build_feature_matrix, FEATURES, TARGET
+from features import build_feature_matrix_v2, FEATURES_V2, TARGET
 
 RESULTS_PATH = os.path.join(os.path.dirname(__file__), '..', 'results', 'model_performance.csv')
 
@@ -78,14 +80,14 @@ def print_report(
     test_b3_mape: float | None = None,
 ) -> None:
     """모델별 MAPE 결과를 요구사항 테이블 형식으로 출력한다."""
-    gap_tv  = train_mape - valid_mape
-    gap_vt  = valid_mape - test_b2_mape
-    gap_tgt_b2 = test_b2_mape - TARGET_MAPE
+    gap_tv      = train_mape - valid_mape
+    gap_vt      = valid_mape - test_b2_mape
+    gap_tgt_b2  = test_b2_mape - TARGET_MAPE
 
-    gap_b2_b3 = None
+    gap_b2_b3  = None
     gap_tgt_b3 = None
     if test_b3_mape is not None:
-        gap_b2_b3 = test_b2_mape - test_b3_mape
+        gap_b2_b3  = test_b2_mape - test_b3_mape
         gap_tgt_b3 = test_b3_mape - TARGET_MAPE
 
     def note_gap(val: float, label_pos: str) -> str:
@@ -106,7 +108,7 @@ def print_report(
         rows.extend([
             ("Test (Batch 3)",           f"{test_b3_mape:.2f}",   ""),
             ("Gap (Batch2-Batch3)",      note_gap(gap_b2_b3, "Test 성능 차이"), "Test 성능 간 비교"),
-            ("Gap (Target-Test)",        note_gap(gap_tgt_b3, "원논문 대비 성능 저하"), "Batch 3 기준, 원논문 성능 비교"),
+            ("Gap (Target-Test B3)",     note_gap(gap_tgt_b3, "원논문 대비 성능 저하"), f"Batch 3 기준, Target {TARGET_MAPE}%"),
         ])
 
     col_w = [26, 12, 30]
@@ -131,7 +133,7 @@ def build_models() -> dict:
     후보 모델 딕셔너리를 반환한다.
     알파는 CV로 자동 선택, GBM은 과적합 방지를 위해 보수적 하이퍼파라미터 적용.
     """
-    alphas = [0.01, 0.1, 1.0, 10.0, 100.0]
+    alphas = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]
 
     return {
         'Ridge': RidgeCV(alphas=alphas),
@@ -152,8 +154,11 @@ def build_models() -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
+    feat_list = FEATURES_V2
+
     print("=" * 60)
     print("Battery Cycle Life Prediction — Training Pipeline")
+    print(f"  피처 ({len(feat_list)}개): {feat_list}")
     print("=" * 60)
 
     # --- 1. 데이터 로드 ---
@@ -173,18 +178,25 @@ def main():
 
     # --- 2. 피처 행렬 생성 ---
     print("\n[2/5] 피처 행렬 생성 중...")
-    df_b1 = build_feature_matrix(batch1, batch_id=1)
-    df_b2 = build_feature_matrix(batch2, batch_id=2)
-    df_b3 = build_feature_matrix(batch3, batch_id=3) if batch3 is not None else None
+    df_b1 = build_feature_matrix_v2(batch1, batch_id=1)
+    df_b2 = build_feature_matrix_v2(batch2, batch_id=2)
+    df_b3 = build_feature_matrix_v2(batch3, batch_id=3) if batch3 is not None else None
+
+    # NaN 행 제거 (신규 피처 계산 실패 셀 방어)
+    df_b1 = df_b1.dropna(subset=feat_list).reset_index(drop=True)
+    df_b2 = df_b2.dropna(subset=feat_list).reset_index(drop=True)
+    if df_b3 is not None:
+        df_b3 = df_b3.dropna(subset=feat_list).reset_index(drop=True)
+
     print(f"  Batch 1 피처 행렬: {df_b1.shape}  (셀 수: {len(df_b1)})")
     print(f"  Batch 2 피처 행렬: {df_b2.shape}  (셀 수: {len(df_b2)})")
     if df_b3 is not None:
         print(f"  Batch 3 피처 행렬: {df_b3.shape}  (셀 수: {len(df_b3)})")
-    print(f"  최종 피처: {FEATURES}")
+    print(f"  최종 피처 ({len(feat_list)}개): {feat_list}")
 
     # --- 3. Hold-out 분리 ---
     print("\n[3/5] Hold-out 분리 (Batch 1, test_size=0.2) ...")
-    X_all = df_b1[FEATURES].values
+    X_all = df_b1[feat_list].values
     y_all = df_b1[TARGET].values
 
     X_train, X_valid, y_train, y_valid = train_test_split(
@@ -192,9 +204,9 @@ def main():
         test_size=HOLD_OUT_RATIO,
         random_state=RANDOM_STATE,
     )
-    X_test_b2 = df_b2[FEATURES].values
+    X_test_b2 = df_b2[feat_list].values
     y_test_b2 = df_b2[TARGET].values
-    X_test_b3 = df_b3[FEATURES].values if df_b3 is not None else None
+    X_test_b3 = df_b3[feat_list].values if df_b3 is not None else None
     y_test_b3 = df_b3[TARGET].values if df_b3 is not None else None
 
     msg = f"  Train: {len(X_train)}셀  |  Valid: {len(X_valid)}셀  |  Test(Batch 2): {len(X_test_b2)}셀"
@@ -205,10 +217,11 @@ def main():
     # --- 4. 스케일링 (X_train 기준 fit, 누수 방지) ---
     print("\n[4/5] StandardScaler 적용 (fit: X_train only) ...")
     scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X_train)
-    X_valid_s = scaler.transform(X_valid)
-    X_test_b2_s  = scaler.transform(X_test_b2)
-    X_test_b3_s  = scaler.transform(X_test_b3) if X_test_b3 is not None else None
+    CLIP_Z = 5.0  # 배치간 분포 이탈로 인한 극단 z-score 방어
+    X_train_s    = np.clip(scaler.fit_transform(X_train), -CLIP_Z, CLIP_Z)
+    X_valid_s    = np.clip(scaler.transform(X_valid),     -CLIP_Z, CLIP_Z)
+    X_test_b2_s  = np.clip(scaler.transform(X_test_b2),  -CLIP_Z, CLIP_Z)
+    X_test_b3_s  = np.clip(scaler.transform(X_test_b3), -CLIP_Z, CLIP_Z) if X_test_b3 is not None else None
 
     # --- 5. 모델 학습 및 평가 ---
     print("\n[5/5] 모델 학습 및 평가 중...")
@@ -233,48 +246,55 @@ def main():
 
         # Lasso, ElasticNet: 선택된 피처 출력
         if name in ['Lasso', 'ElasticNet'] and hasattr(model, 'coef_'):
-            nonzero = [f for f, c in zip(FEATURES, model.coef_) if abs(c) > 1e-6]
+            nonzero = [f for f, c in zip(feat_list, model.coef_) if abs(c) > 1e-6]
             print(f"\n  [{name} 선택 피처]: {nonzero} (총 {len(nonzero)}개)")
 
         print_report(name, train_mape, valid_mape, test_b2_mape, test_b3_mape)
 
         results.append({
-            'model_name':      name,
-            'train_cv_mape':   round(train_mape, 2),
-            'valid_mape':      round(valid_mape,  2),
-            'test_b2_mape':    round(test_b2_mape,   2),
-            'test_b3_mape':    round(test_b3_mape,   2) if test_b3_mape is not None else np.nan,
-            'gap_train_valid': round(train_mape - valid_mape, 2),
+            'feature_version':    'v2',
+            'model_name':         name,
+            'train_cv_mape':      round(train_mape, 2),
+            'valid_mape':         round(valid_mape,  2),
+            'test_b2_mape':       round(test_b2_mape,   2),
+            'test_b3_mape':       round(test_b3_mape,   2) if test_b3_mape is not None else np.nan,
+            'gap_train_valid':    round(train_mape - valid_mape, 2),
             'gap_valid_test_b2':  round(valid_mape  - test_b2_mape,  2),
             'gap_target_test_b2': round(test_b2_mape   - TARGET_MAPE, 2),
             'gap_b2_b3':          round(test_b2_mape - test_b3_mape, 2) if test_b3_mape is not None else np.nan,
             'gap_target_test_b3': round(test_b3_mape - TARGET_MAPE, 2) if test_b3_mape is not None else np.nan,
         })
 
-    # --- 결과 저장 ---
-    df_results = pd.DataFrame(results)
+    # --- 결과 저장 (기존 파일에 append) ---
+    df_new = pd.DataFrame(results)
     os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
+    if os.path.exists(RESULTS_PATH):
+        df_old = pd.read_csv(RESULTS_PATH)
+        df_results = pd.concat([df_old, df_new], ignore_index=True)
+    else:
+        df_results = df_new
     df_results.to_csv(RESULTS_PATH, index=False)
-    print(f"\n결과 저장 완료: {RESULTS_PATH}")
+    print(f"\n결과 저장 완료 (append): {RESULTS_PATH}")
 
     # --- 최종 모델 선택 권고 ---
     print("\n" + "=" * 60)
-    print("최종 모델 선택 기준: Valid MAPE 최소")
-    best_idx   = df_results['valid_mape'].idxmin()
-    best_name  = df_results.loc[best_idx, 'model_name']
-    best_mape  = df_results.loc[best_idx, 'valid_mape']
+    print("최종 모델 선택 기준: Valid MAPE 최소 [피처 버전: v2]")
+    best_idx  = df_new['valid_mape'].idxmin()
+    best_name = df_new.loc[best_idx, 'model_name']
+    best_mape = df_new.loc[best_idx, 'valid_mape']
 
-    ridge_mape = df_results.loc[df_results['model_name'] == 'Ridge', 'valid_mape'].values[0]
-    gap_pp     = best_mape - ridge_mape  # %p 차이 (음수 = best가 Ridge보다 낮음)
+    ridge_rows = df_new[df_new['model_name'] == 'Ridge']
+    if not ridge_rows.empty:
+        ridge_mape = ridge_rows['valid_mape'].values[0]
+        gap_pp = best_mape - ridge_mape
+        print(f"  Valid MAPE 최소 모델: {best_name} ({best_mape:.2f}%)")
+        if best_name != 'Ridge' and abs(gap_pp) <= 5.0:
+            print(f"  → Ridge와 차이 {abs(gap_pp):.2f}%p ≤ 5%p : 해석 가능성 우선 → Ridge 권고")
+        else:
+            print(f"  → 최종 권고 모델: {best_name}")
 
-    print(f"  Valid MAPE 최소 모델: {best_name} ({best_mape:.2f}%)")
-    if best_name != 'Ridge' and abs(gap_pp) <= 5.0:
-        print(f"  → Ridge와 차이 {abs(gap_pp):.2f}%p ≤ 5%p : 해석 가능성 우선 → Ridge 권고")
-    else:
-        print(f"  → 최종 권고 모델: {best_name}")
-
-    print("\n전체 결과:")
-    print(df_results.to_string(index=False))
+    print("\n전체 결과 (이번 실행):")
+    print(df_new.to_string(index=False))
     print("=" * 60)
 
 
